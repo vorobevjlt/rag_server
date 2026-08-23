@@ -15,7 +15,12 @@ def retrieve_context(project_id, user_query):
     try:
         project_settings = get_project_settings(project_id)
 
+        if not project_settings.get("rag_enabled", True):
+            return [], [], [], []
+
         document_ids = get_project_document_ids(project_id)
+        if not document_ids:
+            return [], [], [], []
 
         strategy = project_settings["rag_strategy"]
         chunks = []

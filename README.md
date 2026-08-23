@@ -62,6 +62,21 @@
 
    The server will run on `http://localhost:8000`.
 
+   For a remote machine, keep Redis private on the Compose network and expose
+   the API through HTTPS (normally via a reverse proxy). Set `S3_ENDPOINT_URL`
+   for the S3-compatible provider, and set `CLERK_AUTHORIZED_PARTIES` to the
+   comma-separated frontend origins that may mint accepted Clerk tokens. The
+   API validates project ownership again for every files, settings, and AG-UI
+   request.
+
+   The frontend connects its CopilotKit runtime to:
+
+   ```text
+   POST /api/agents/project
+   X-Project-ID: <authenticated project UUID>
+   Authorization: Bearer <Clerk session token>
+   ```
+
 5. **Stop All Services:**
 
    To stop everything at once:

@@ -1,15 +1,16 @@
 import zipfile
 from pathlib import PurePosixPath
 
-from unstructured.partition.html import partition_html
-from unstructured.partition.pdf import partition_pdf
-from unstructured.partition.docx import partition_docx
-from unstructured.partition.pptx import partition_pptx
-from unstructured.partition.text import partition_text
-from unstructured.partition.md import partition_md
+from unstructured.partition.html import partition_html  # pyright: ignore[reportMissingImports]
+from unstructured.partition.pdf import partition_pdf  # pyright: ignore[reportMissingImports]
+from unstructured.partition.docx import partition_docx  # pyright: ignore[reportMissingImports]
+from unstructured.partition.pptx import partition_pptx  # pyright: ignore[reportMissingImports]
+from unstructured.partition.xlsx import partition_xlsx  # pyright: ignore[reportMissingImports]
+from unstructured.partition.text import partition_text  # pyright: ignore[reportMissingImports]
+from unstructured.partition.md import partition_md  # pyright: ignore[reportMissingImports]
 
 from src.services.llm import openAI
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage  # pyright: ignore[reportMissingImports]
 
 
 MAX_UNCOMPRESSED_OFFICE_SIZE = 250 * 1024 * 1024
@@ -25,7 +26,7 @@ def validate_document_content(temp_file: str, file_type: str):
                 raise ValueError("The uploaded file is not a valid PDF")
         return
 
-    if kind in {"docx", "pptx"}:
+    if kind in {"docx", "pptx", "xlsx"}:
         if not zipfile.is_zipfile(temp_file):
             raise ValueError(f"The uploaded file is not a valid {kind.upper()} file")
 
@@ -37,7 +38,11 @@ def validate_document_content(temp_file: str, file_type: str):
                 for name in member_names
             ):
                 raise ValueError(f"The {kind.upper()} file contains unsafe paths")
-            required_prefix = "word/" if kind == "docx" else "ppt/"
+            required_prefix = {
+                "docx": "word/",
+                "pptx": "ppt/",
+                "xlsx": "xl/",
+            }[kind]
             if "[Content_Types].xml" not in member_names or not any(
                 name.startswith(required_prefix) for name in member_names
             ):
@@ -91,6 +96,7 @@ def partition_document(temp_file: str, file_type: str, source_type: str = "file"
             strategy="hi_res",
             infer_table_structure=True,
         ),
+        "xlsx": lambda: partition_xlsx(filename=temp_file),
         "txt": lambda: partition_text(filename=temp_file),
         "md": lambda: partition_md(filename=temp_file),
     }
@@ -187,15 +193,39 @@ def separate_content_types(chunk, source_type="file"):
     return content_data
 
 
-def get_page_number(chunk, chunk_index):
+def get_page_number(chunk, chunk_index, use_fallback=True):
     """Get page number from chunk or use fallback"""
     if hasattr(chunk, "metadata"):
         page_number = getattr(chunk.metadata, "page_number", None)
         if page_number is not None:
             return page_number
 
-    # Fallback: use chunk index as page number
-    return chunk_index + 1
+    # Page-like formats benefit from a stable fallback. Spreadsheets use sheet
+    # metadata instead and should not invent page numbers.
+    return chunk_index + 1 if use_fallback else None
+
+
+def get_source_metadata(chunk, file_type=None):
+    """Extract source coordinates that can be shown in answer citations."""
+    metadata = getattr(chunk, "metadata", None)
+    if metadata is None:
+        return {}
+
+    source_metadata = {}
+    sheet_name = getattr(metadata, "page_name", None) or getattr(
+        metadata, "sheet_name", None
+    )
+    if sheet_name:
+        source_metadata["sheet"] = str(sheet_name)
+
+    row_start = getattr(metadata, "row_start", None)
+    row_end = getattr(metadata, "row_end", None)
+    if row_start is not None and row_end is not None:
+        source_metadata["row_range"] = f"Rows {row_start}-{row_end}"
+
+    if file_type:
+        source_metadata["format"] = file_type.lower()
+    return source_metadata
 
 
 def create_ai_summary(text, tables_html, images_base64):
@@ -255,7 +285,7 @@ def create_ai_summary(text, tables_html, images_base64):
             # print(f"🖼️ Image {i+1} included in summary request")
 
         message = HumanMessage(content=message_content)
-        response = openAI["chat_llm"].invoke([message])
+        response = openAI["mini_llm"].invoke([message])
 
         return response.content
 

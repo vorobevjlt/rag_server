@@ -11,6 +11,21 @@ from src.services.scrapingbee_mcp import get_scrapingbee_mcp_tools
 
 
 router = APIRouter(tags=["projectRoutes"])
+
+
+def require_project_owner(project_id: str, clerk_id: str) -> dict:
+    result = (
+        supabase.table("projects")
+        .select("*")
+        .eq("id", project_id)
+        .eq("owner_clerk_id", clerk_id)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result.data[0]
+
+
 """
 `/api/projects`
 
@@ -74,7 +89,7 @@ async def get_projects(current_user_clerk_id: str = Depends(get_current_user_cle
         projects_query_result = (
             supabase.table("projects")
             .select("*")
-            .eq("clerk_id", current_user_clerk_id)
+            .eq("owner_clerk_id", current_user_clerk_id)
             .execute()
         )
 
@@ -111,8 +126,8 @@ async def create_project(
         # Insert new project into database
         project_insert_data = {
             "name": project_data.name,
-            "description": project_data.description,
-            "clerk_id": current_user_clerk_id,
+            "context": project_data.description or "",
+            "owner_clerk_id": current_user_clerk_id,
         }
 
         project_creation_result = (
@@ -141,10 +156,14 @@ async def create_project(
             "reranking_model": "reranker-english-v3.0",
             "vector_weight": 0.7,
             "keyword_weight": 0.3,
+            "rag_enabled": True,
+            "answer_mode": "combined",
         }
 
         project_settings_creation_result = (
-            supabase.table("project_settings").insert(project_settings_data).execute()
+            supabase.table("project_settings")
+            .upsert(project_settings_data, on_conflict="project_id")
+            .execute()
         )
 
         if not project_settings_creation_result.data:
@@ -190,7 +209,7 @@ async def delete_project(
             supabase.table("projects")
             .select("id")
             .eq("id", project_id)
-            .eq("clerk_id", current_user_clerk_id)
+            .eq("owner_clerk_id", current_user_clerk_id)
             .execute()
         )
 
@@ -205,7 +224,7 @@ async def delete_project(
             supabase.table("projects")
             .delete()
             .eq("id", project_id)
-            .eq("clerk_id", current_user_clerk_id)
+            .eq("owner_clerk_id", current_user_clerk_id)
             .execute()
         )
 
@@ -247,7 +266,7 @@ async def get_project(
             supabase.table("projects")
             .select("*")
             .eq("id", project_id)
-            .eq("clerk_id", current_user_clerk_id)
+            .eq("owner_clerk_id", current_user_clerk_id)
             .execute()
         )
 
@@ -283,6 +302,7 @@ async def get_project_chats(
     * 3. Return project chats data
     """
     try:
+        require_project_owner(project_id, current_user_clerk_id)
         project_chats_result = (
             supabase.table("chats")
             .select("*")
@@ -322,6 +342,7 @@ async def get_project_settings(
     * 4. Return project settings data
     """
     try:
+        require_project_owner(project_id, current_user_clerk_id)
         project_settings_result = (
             supabase.table("project_settings")
             .select("*")
@@ -366,19 +387,7 @@ async def update_project_settings(
     * 6. Return successfully updated project settings data
     """
     try:
-        project_ownership_verification_result = (
-            supabase.table("projects")
-            .select("id")
-            .eq("id", project_id)
-            .eq("clerk_id", current_user_clerk_id)
-            .execute()
-        )
-
-        if not project_ownership_verification_result.data:
-            raise HTTPException(
-                status_code=404,
-                detail="Project not found or you don't have permission to update its settings",
-            )
+        require_project_owner(project_id, current_user_clerk_id)
 
         project_settings_ownership_verification_result = (
             supabase.table("project_settings")
@@ -440,6 +449,18 @@ async def send_message(
     Returns a JSON response with the user message and AI response.
     """
     try:
+        require_project_owner(project_id, current_user_clerk_id)
+        chat_result = (
+            supabase.table("chats")
+            .select("id")
+            .eq("id", chat_id)
+            .eq("project_id", project_id)
+            .eq("clerk_id", current_user_clerk_id)
+            .execute()
+        )
+        if not chat_result.data:
+            raise HTTPException(status_code=404, detail="Chat not found")
+
         message_content = message.content
         message_insert_data = {
             "content": message_content,
@@ -457,9 +478,14 @@ async def send_message(
 
         try:
             project_settings = await get_project_settings(project_id, current_user_clerk_id)
-            agent_type = project_settings["data"].get("agent_type", "simple")
+            settings_data = project_settings["data"]
         except Exception:
-            agent_type = "simple"
+            settings_data = {
+                "agent_type": "simple",
+                "answer_mode": "combined",
+                "rag_enabled": True,
+            }
+        agent_type = settings_data.get("agent_type", "simple")
 
         chat_history = get_chat_history(chat_id, exclude_message_id=current_message_id)
 
@@ -472,6 +498,8 @@ async def send_message(
             agent = create_simple_rag_agent(
                 project_id=project_id,
                 chat_history=chat_history,
+                answer_mode=settings_data.get("answer_mode", "combined"),
+                rag_enabled=settings_data.get("rag_enabled", True),
             )
             result = agent.invoke(
                 {"messages": [{"role": "user", "content": message_content}]}

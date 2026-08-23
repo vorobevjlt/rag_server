@@ -9,11 +9,12 @@ from src.rag.ingestion.utils import (
     analyze_elements,
     separate_content_types,
     get_page_number,
+    get_source_metadata,
     create_ai_summary,
     validate_document_content,
 )
 from src.models.index import ProcessingStatus
-from unstructured.chunking.title import chunk_by_title
+from unstructured.chunking.title import chunk_by_title  # pyright: ignore[reportMissingImports]
 from src.services.webScrapper import scrapingbee_client
 
 
@@ -62,19 +63,30 @@ def process_document(document_id: str):
         )
 
         # Step 3 : Generate AI summaries for chunk which are Having images and tables.
+        source_format = (
+            document["filename"].rsplit(".", 1)[-1].lower()
+            if document["source_type"] == "file"
+            else "html"
+        )
         processed_chunks = summarise_chunks(
-            chunks, document_id, source_type=document["source_type"]
+            chunks,
+            document_id,
+            source_type=document["source_type"],
+            file_type=source_format,
         )
         update_status_in_database(document_id, ProcessingStatus.VECTORIZATION)
 
         # Step 4 : Create vector embeddings (1536 dimensions per chunk).
-        vectorize_chunks_summary_and_store_in_database(processed_chunks, document_id)
+        stored_chunk_ids = vectorize_chunks_summary_and_store_in_database(
+            processed_chunks, document_id
+        )
 
         update_status_in_database(document_id, ProcessingStatus.COMPLETED)
 
         return {
             "success": True,
             "document_id": document_id,
+            "chunks_created": len(stored_chunk_ids),
         }
     except Exception as e:
         error_message = str(e)
@@ -203,7 +215,7 @@ def chunk_elements_by_title(elements):
         raise Exception(f"Failed to chunk elements by title: {str(e)}")
 
 
-def summarise_chunks(chunks, document_id, source_type="file"):
+def summarise_chunks(chunks, document_id, source_type="file", file_type=None):
 
     try:
         processed_chunks = []
@@ -246,7 +258,10 @@ def summarise_chunks(chunks, document_id, source_type="file"):
                 "content": enhanced_content,
                 "original_content": original_content,
                 "type": content_data["types"],
-                "page_number": get_page_number(chunk, i),
+                "page_number": get_page_number(
+                    chunk, i, use_fallback=file_type != "xlsx"
+                ),
+                "source_metadata": get_source_metadata(chunk, file_type),
                 "char_count": len(enhanced_content),
             }
 
@@ -289,23 +304,32 @@ def vectorize_chunks_summary_and_store_in_database(processed_chunks, document_id
                         raise e
                     time.sleep(2**attempt)
 
+        if len(processed_chunks) != len(all_vectorized_embeddings):
+            raise ValueError("Embedding count did not match the document chunk count")
+
         chunk_embedding_pairs = list(zip(processed_chunks, all_vectorized_embeddings))
-        stored_chunk_ids = []
-
+        chunk_rows = []
         for i, (processed_chunk, embedding_vector) in enumerate(chunk_embedding_pairs):
-            chunk_data_with_embedding = {
-                **processed_chunk,
-                "document_id": document_id,
-                "chunk_index": i,
-                "embedding": embedding_vector,
-            }
-
-            result = (
-                supabase.table("document_chunks")
-                .insert(chunk_data_with_embedding)
-                .execute()
+            chunk_rows.append(
+                {
+                    **processed_chunk,
+                    "document_id": document_id,
+                    "chunk_index": i,
+                    "embedding": embedding_vector,
+                }
             )
-            stored_chunk_ids.append(result.data[0]["id"])
+
+        if not chunk_rows:
+            raise ValueError("The document did not produce any searchable chunks")
+
+        # One PostgREST insert keeps a document from becoming partially searchable.
+        supabase.table("document_chunks").delete().eq(
+            "document_id", document_id
+        ).execute()
+        result = supabase.table("document_chunks").insert(chunk_rows).execute()
+        if not result.data or len(result.data) != len(chunk_rows):
+            raise ValueError("Failed to store all document chunks")
+        stored_chunk_ids = [row["id"] for row in result.data]
 
         # print(f"Successfully stored {len(processed_chunks)} chunks with embeddings")
         return stored_chunk_ids

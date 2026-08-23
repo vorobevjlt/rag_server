@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from pydantic import BaseModel, Field, model_validator
-from typing import Optional, List
+from pydantic import AliasChoices, BaseModel, Field, model_validator
+from typing import Literal, Optional, List
 from enum import Enum
 
 
@@ -10,6 +10,7 @@ DOCUMENT_MIME_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".txt": "text/plain",
     ".md": "text/markdown",
 }
@@ -21,6 +22,9 @@ DOCUMENT_ACCEPTED_MIME_TYPES = {
     },
     ".pptx": {
         "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    },
+    ".xlsx": {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     },
     ".txt": {"text/plain"},
     ".md": {"text/markdown", "text/x-markdown", "text/plain"},
@@ -49,6 +53,10 @@ class ProjectSettings(BaseModel):
     reranking_model: str = Field(..., description="The reranking model to use")
     vector_weight: float = Field(..., description="The vector weight")
     keyword_weight: float = Field(..., description="The keyword weight")
+    rag_enabled: bool = Field(True, description="Whether project RAG is enabled")
+    answer_mode: Literal["combined", "knowledge_only"] = Field(
+        "combined", description="How project knowledge and model knowledge are combined"
+    )
 
 
 class FileUploadRequest(BaseModel):
@@ -56,7 +64,10 @@ class FileUploadRequest(BaseModel):
         ..., min_length=1, max_length=255, description="The name of the file"
     )
     file_type: str = Field(
-        default="", max_length=255, description="The browser-reported MIME type"
+        default="",
+        max_length=255,
+        validation_alias=AliasChoices("file_type", "content_type"),
+        description="The browser-reported MIME type",
     )
     file_size: int = Field(
         ...,
@@ -97,7 +108,14 @@ class FileUploadRequest(BaseModel):
 
 
 class ConfirmFileUploadRequest(BaseModel):
-    s3_key: str = Field(..., min_length=1, max_length=1024)
+    document_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    s3_key: Optional[str] = Field(default=None, min_length=1, max_length=1024)
+
+    @model_validator(mode="after")
+    def require_document_reference(self):
+        if not self.document_id and not self.s3_key:
+            raise ValueError("document_id is required")
+        return self
 
 
 class ProcessingStatus(str, Enum):

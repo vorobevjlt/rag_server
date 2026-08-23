@@ -1,7 +1,7 @@
 from src.services.supabase import supabase
-from fastapi import HTTPException
+from fastapi import HTTPException  # pyright: ignore[reportMissingImports]
 from typing import List, Dict, Tuple
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage  # pyright: ignore[reportMissingImports]
 from src.services.llm import openAI
 from src.models.index import QueryVariations
 import traceback
@@ -30,6 +30,8 @@ def get_project_document_ids(project_id):
             supabase.table("project_documents")
             .select("id")
             .eq("project_id", project_id)
+            .eq("processing_status", "completed")
+            .eq("enabled", True)
             .execute()
         )
 
@@ -63,11 +65,11 @@ def build_context_from_retrieved_chunks(
     if unique_doc_ids:
         result = (
             supabase.table("project_documents")
-            .select("id, filename")
+            .select("id, filename, source_type, source_url")
             .in_("id", unique_doc_ids)
             .execute()
         )
-        filename_map = {doc["id"]: doc["filename"] for doc in result.data}
+        filename_map = {doc["id"]: doc for doc in result.data}
 
     for chunk in chunks:
         original_content = chunk.get("original_content", {})
@@ -83,12 +85,18 @@ def build_context_from_retrieved_chunks(
 
         doc_id = chunk.get("document_id")
         if doc_id:
+            source = filename_map.get(doc_id, {})
+            source_metadata = chunk.get("source_metadata") or {}
             citations.append(
                 {
                     "chunk_id": chunk.get("id"),
                     "document_id": doc_id,
-                    "filename": filename_map.get(doc_id, "Unknown Document"),
-                    "page": chunk.get("page_number", "Unknown"),
+                    "filename": source.get("filename", "Unknown Document"),
+                    "page": chunk.get("page_number"),
+                    "sheet": source_metadata.get("sheet"),
+                    "row_range": source_metadata.get("row_range"),
+                    "source_type": source.get("source_type"),
+                    "source_url": source.get("source_url"),
                 }
             )
 
@@ -210,7 +218,7 @@ def prepare_prompt_and_invoke_llm(
     print(
         f"🤖 Invoking LLM with {len(messages)} messages ({len(texts)} texts, {len(tables)} tables, {len(images)} images)..."
     )
-    response = openAI["chat_llm"].invoke(messages)
+    response = openAI["mini_llm"].invoke(messages)
 
     return response.content
 

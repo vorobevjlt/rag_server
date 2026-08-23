@@ -31,6 +31,22 @@ CONFIRMED_PROCESSING_STATUSES = {
 }
 
 
+def require_project_owner(project_id: str, clerk_id: str) -> dict:
+    project_result = (
+        supabase.table("projects")
+        .select("id, name")
+        .eq("id", project_id)
+        .eq("owner_clerk_id", clerk_id)
+        .execute()
+    )
+    if not project_result.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+    supabase.table("users").upsert(
+        {"clerk_id": clerk_id}, on_conflict="clerk_id"
+    ).execute()
+    return project_result.data[0]
+
+
 def mark_upload_failed(document: dict, message: str):
     """Persist an actionable upload error without hiding the document."""
     processing_details = document.get("processing_details") or {}
@@ -96,6 +112,7 @@ async def get_project_files(
     * 3. Return project documents data
     """
     try:
+        require_project_owner(project_id, current_user_clerk_id)
         project_files_result = (
             supabase.table("project_documents")
             .select("*")
@@ -140,19 +157,7 @@ async def get_upload_presigned_url(
     """
     try:
         # Verify project exists and belongs to the current user
-        project_ownership_verification_result = (
-            supabase.table("projects")
-            .select("id")
-            .eq("id", project_id)
-            .eq("clerk_id", current_user_clerk_id)
-            .execute()
-        )
-
-        if not project_ownership_verification_result.data:
-            raise HTTPException(
-                status_code=404,
-                detail="Project not found or you don't have permission to upload files to this project",
-            )
+        require_project_owner(project_id, current_user_clerk_id)
 
         # Generate s3 key
         file_extension = Path(file_upload_request.filename).suffix.lower().lstrip(".")
@@ -207,6 +212,7 @@ async def get_upload_presigned_url(
         return {
             "message": "Upload presigned url generated successfully",
             "data": {
+                "document_id": document_creation_result.data[0]["id"],
                 "upload_url": presigned_url,
                 "s3_key": s3_key,
                 "content_type": file_upload_request.file_type,
@@ -240,17 +246,24 @@ async def confirm_file_upload_to_s3(
     * 6. Return successfully confirmed file upload data
     """
     try:
-        s3_key = confirm_file_upload_request.s3_key
+        require_project_owner(project_id, current_user_clerk_id)
 
         # Verify file exists in database
-        document_verification_result = (
+        document_query = (
             supabase.table("project_documents")
             .select("*")
-            .eq("s3_key", s3_key)
             .eq("project_id", project_id)
             .eq("clerk_id", current_user_clerk_id)
-            .execute()
         )
+        if confirm_file_upload_request.document_id:
+            document_query = document_query.eq(
+                "id", confirm_file_upload_request.document_id
+            )
+        else:
+            document_query = document_query.eq(
+                "s3_key", confirm_file_upload_request.s3_key
+            )
+        document_verification_result = document_query.execute()
 
         if not document_verification_result.data:
             raise HTTPException(
@@ -259,6 +272,7 @@ async def confirm_file_upload_to_s3(
             )
 
         document = document_verification_result.data[0]
+        s3_key = document["s3_key"]
         if document["processing_status"] in CONFIRMED_PROCESSING_STATUSES:
             return {
                 "message": "File upload was already confirmed",
@@ -393,6 +407,7 @@ async def process_url(
     * 4. Return successfully processed URL data
     """
     try:
+        require_project_owner(project_id, current_user_clerk_id)
         # Validate URL
         url = url.url
         if url.startswith("http://") or url.startswith("https://"):
@@ -416,7 +431,7 @@ async def process_url(
                     "s3_key": "",
                     "file_size": 0,
                     "file_type": "text/html",
-                    "processing_status": ProcessingStatus.QUEUED,
+                    "processing_status": ProcessingStatus.QUEUED.value,
                     "clerk_id": current_user_clerk_id,
                     "source_type": "url",
                     "source_url": url,
@@ -476,6 +491,7 @@ async def retry_project_document_processing(
 ):
     """Retry a failed ingestion job without uploading the source again."""
     try:
+        require_project_owner(project_id, current_user_clerk_id)
         document_result = (
             supabase.table("project_documents")
             .select("*")
@@ -592,6 +608,7 @@ async def delete_project_document(
     * 4. Return successfully deleted document data
     """
     try:
+        require_project_owner(project_id, current_user_clerk_id)
         # Verify document exists and belongs to the current user and Take complete project document record
         document_ownership_verification_result = (
             supabase.table("project_documents")
@@ -671,6 +688,7 @@ async def get_project_document_chunks(
     * 3. Return project document chunks data
     """
     try:
+        require_project_owner(project_id, current_user_clerk_id)
         # Verify document exists and belongs to the current user and Take complete project document record
         document_ownership_verification_result = (
             supabase.table("project_documents")

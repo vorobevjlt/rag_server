@@ -28,8 +28,17 @@ if not os.getenv("REDIS_URL"):
 if not os.getenv("OPENAI_API_KEY"):
     raise ValueError("OPENAI_API_KEY must be set in .env file")
 
-if not os.getenv("SCRAPINGBEE_API_KEY"):
-    raise ValueError("SCRAPINGBEE_API_KEY must be set in .env file")
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+authorized_parties = [
+    party.strip()
+    for party in os.getenv("CLERK_AUTHORIZED_PARTIES", os.getenv("DOMAIN", "")).split(",")
+    if party.strip()
+]
 
 
 appConfig = {
@@ -41,7 +50,11 @@ appConfig = {
     "aws_region": os.getenv("AWS_REGION"),
     "aws_secret_access_key": os.getenv("AWS_SECRET_ACCESS_KEY"),
     "aws_access_key_id": os.getenv("AWS_ACCESS_KEY_ID"),
+    "s3_endpoint_url": os.getenv("S3_ENDPOINT_URL"),
+    "s3_addressing_style": os.getenv("S3_ADDRESSING_STYLE", "auto"),
     "redis_url": os.getenv("REDIS_URL"),
     "openai_api_key": os.getenv("OPENAI_API_KEY"),
     "scrapingbee_api_key": os.getenv("SCRAPINGBEE_API_KEY"),
+    "allowed_origins": allowed_origins,
+    "authorized_parties": authorized_parties,
 }

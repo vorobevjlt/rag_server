@@ -5,19 +5,17 @@ openAI = {
     "embeddings": OpenAIEmbeddings(
         model="text-embedding-3-large",
         api_key=appConfig["openai_api_key"],
-        dimensions=1536,
-        base_url="https://api.proxyapi.ru/openai/v1"
+        dimensions=1536
     ),
     "chat_llm": ChatOpenAI(
-        model="gpt-5.6-terra", api_key=appConfig["openai_api_key"], base_url="https://api.proxyapi.ru/openai/v1"
+        model="gpt-5.6-terra", api_key=appConfig["openai_api_key"]
     ),
     "mini_llm": ChatOpenAI(
-        model="gpt-5.6-luna", api_key=appConfig["openai_api_key"], base_url="https://api.proxyapi.ru/openai/v1"
+        model="gpt-5.6-luna", api_key=appConfig["openai_api_key"]
     ),
 
     "resoning_chat_llm": ChatOpenAI(
         model="gpt-5.6-luna",
-        base_url="https://api.proxyapi.ru/openai/v1",
         api_key=appConfig["openai_api_key"],
         use_responses_api=True,
         use_previous_response_id=True,
